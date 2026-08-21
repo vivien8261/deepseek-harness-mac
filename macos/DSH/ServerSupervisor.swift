@@ -80,13 +80,13 @@ final class ServerSupervisor {
             return
         }
 
-        guard let repoRoot = NodeEnvironment.repoRoot() else {
-            LaunchLog.write("repoRoot not resolvable from bundle \(Bundle.main.bundlePath)")
+        guard let runtime = NodeEnvironment.bundledRuntime() else {
+            LaunchLog.write("bundled runtime missing under \(Bundle.main.bundlePath)")
             callbackQueue.async { [weak self] in
                 guard let self else { return }
                 self.delegate?.supervisor(
                     self,
-                    didFail: "无法定位项目目录（deepseek-harness submodule 或 macos/build.sh 缺失）。\n请确认 App 位于项目 dist/ 目录内，且已运行 git submodule update --init。"
+                    didFail: "App 资源不完整（缺少内置 Node 或 dsh 运行时）。\n请重新运行 macos/build.sh 并安装到 /Applications。"
                 )
             }
             return
@@ -94,25 +94,32 @@ final class ServerSupervisor {
 
         lock.lock()
         selectedPort = port
+        reportedVersion = true
         lock.unlock()
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let command = NodeEnvironment.command(port: port, repoRoot: repoRoot)
-        let submodule = repoRoot + "/deepseek-harness"
-        let bin = submodule + "/apps/cli/lib/bin.js"
-        LaunchLog.write("starting port=\(port) cwd=\(home) repo=\(repoRoot) cmd=\(command)")
+        let arguments = NodeEnvironment.webArguments(port: port, binScript: runtime.binScript)
+        LaunchLog.write(
+            "starting port=\(port) cwd=\(home) node=\(runtime.nodeExecutable) bin=\(runtime.binScript) version=\(runtime.version)"
+        )
         emitLog("工作目录：\(home)\n")
-        emitLog("项目目录：\(repoRoot)\n")
-        emitLog("dsh 源码：\(submodule)\n")
-        emitLog("构建产物：\(bin)（不存在时自动从源码构建）\n")
+        emitLog("dsh 版本：\(runtime.version)\n")
+        emitLog("dsh commit：\(runtime.commit)\n")
+        emitLog("内置 Node：\(runtime.nodeVersion)\n")
+        emitLog("运行时：\(runtime.dshRoot)\n")
         emitLog("服务端口：\(port)\n")
-        emitLog("执行：\(command)\n")
+        emitLog("执行：\(runtime.nodeExecutable) \(arguments.joined(separator: " "))\n")
+
+        callbackQueue.async { [weak self] in
+            guard let self else { return }
+            self.delegate?.supervisor(self, didReportVersion: runtime.version)
+        }
 
         do {
             let handle = try ProcessGroup.spawn(
-                executable: "/usr/bin/script",
-                arguments: ["-q", "/dev/null", "/bin/zsh", "-lic", command],
-                environment: NodeEnvironment.launchEnvironment(),
+                executable: runtime.nodeExecutable,
+                arguments: arguments,
+                environment: NodeEnvironment.launchEnvironment(nodeBinDir: runtime.nodeBinDir),
                 currentDirectory: home
             )
             LaunchLog.write("spawned pid=\(handle.pid)")
@@ -124,7 +131,7 @@ final class ServerSupervisor {
                 guard let self else { return }
                 self.delegate?.supervisor(
                     self,
-                    didFail: error.localizedDescription + "\n请确认已安装 Node.js 22+ 与 git，且 deepseek-harness submodule 已初始化（构建请运行 macos/build.sh）。"
+                    didFail: error.localizedDescription + "\n内置运行时启动失败。请重新运行 macos/build.sh。"
                 )
             }
         }
@@ -313,7 +320,7 @@ final class ServerSupervisor {
         } else {
             delegate?.supervisor(
                 self,
-                didFail: "服务在就绪前退出。请确认已安装 Node.js 22+ 与 git，且 deepseek-harness submodule 已初始化（构建请运行 macos/build.sh）。"
+                didFail: "服务在就绪前退出。请重新运行 macos/build.sh 安装完整运行时。"
             )
         }
     }

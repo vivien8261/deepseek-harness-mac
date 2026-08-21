@@ -22,6 +22,7 @@ if [ ! -e "$REPO/deepseek-harness/.git" ]; then
   git -C "$REPO" submodule update --init --depth 1
 fi
 "$ROOT/scripts/build-dsh.sh" "$REPO"
+"$ROOT/scripts/stage-runtime.sh" "$REPO"
 
 "$ROOT/scripts/make-icon.sh"
 
@@ -41,9 +42,32 @@ cp "$ROOT/DSH/Info.plist" "$CONTENTS/Info.plist"
 cp "$ROOT/DSH/Assets/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 
+ditto "$REPO/dist/runtime/dsh" "$RESOURCES/dsh"
+ditto "$REPO/dist/runtime/node" "$RESOURCES/node"
+cp "$REPO/dist/runtime/runtime.json" "$RESOURCES/runtime.json"
+chmod 755 "$RESOURCES/node/bin/node"
+
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$APP"
 fi
 
+INSTALL_APP="/Applications/DeepSeek Harness.app"
+if pgrep -xq DSH >/dev/null 2>&1; then
+  echo "正在退出已运行的 DeepSeek Harness，以便安装到 /Applications…"
+  osascript -e 'tell application "DeepSeek Harness" to quit' >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5; do
+    pgrep -xq DSH >/dev/null 2>&1 || break
+    sleep 0.4
+  done
+  pkill -x DSH >/dev/null 2>&1 || true
+fi
+rm -rf "$INSTALL_APP"
+ditto "$APP" "$INSTALL_APP"
+xattr -cr "$INSTALL_APP" >/dev/null 2>&1 || true
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --deep --sign - "$INSTALL_APP"
+fi
+
 echo "Built $APP"
-echo "Run with: open \"$APP\""
+echo "Installed $INSTALL_APP"
+echo "Run with: open \"$INSTALL_APP\""
