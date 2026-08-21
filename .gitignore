@@ -1,0 +1,10 @@
+dist/
+.cache/
+macos/DSH/Assets/AppIcon.iconset/
+macos/DSH/Assets/AppIcon.icns
+macos/DSH/Assets/AppIcon-1024.png
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.pnpm-store/
