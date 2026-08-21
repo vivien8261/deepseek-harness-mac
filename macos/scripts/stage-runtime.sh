@@ -21,7 +21,7 @@ NODE_DIR="$RUNTIME/node"
 MARKER="$RUNTIME/runtime.json"
 BIN_REL="lib/bin.js"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RECIPE="2"
+RECIPE="4"
 
 log() { echo "[runtime] $*"; }
 fail() { echo "[runtime] ERROR: $*" >&2; exit 1; }

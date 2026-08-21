@@ -305,10 +305,22 @@ final class ServerSupervisor {
         timer?.cancel()
         source?.cancel()
         handle?.readabilityHandler = nil
+        if let handle {
+            let leftover = handle.availableData
+            if !leftover.isEmpty {
+                let chunk = String(data: leftover, encoding: .utf8)
+                    ?? String(decoding: leftover, as: UTF8.self)
+                let cleaned = stripANSI(chunk)
+                lock.lock()
+                logBuffer.append(cleaned)
+                lock.unlock()
+                emitLog(cleaned)
+            }
+            try? handle.close()
+        }
         if currentPid > 0 {
             _ = ProcessGroup.waitNonBlocking(currentPid)
         }
-        try? handle?.close()
         LaunchLog.write("process exited pid=\(currentPid) stopping=\(wasStopping) ready=\(wasReady)")
 
         if wasStopping {
@@ -318,10 +330,17 @@ final class ServerSupervisor {
         if wasReady {
             delegate?.supervisorDidExitUnexpectedly(self)
         } else {
-            delegate?.supervisor(
-                self,
-                didFail: "服务在就绪前退出。请重新运行 macos/build.sh 安装完整运行时。"
-            )
+            lock.lock()
+            let output = logBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            lock.unlock()
+            let detail: String
+            if output.isEmpty {
+                detail = "服务在就绪前退出，且没有捕获到运行时输出。"
+            } else {
+                let tail = String(output.suffix(4000))
+                detail = "服务在就绪前退出。\n\n\(tail)"
+            }
+            delegate?.supervisor(self, didFail: detail)
         }
     }
 

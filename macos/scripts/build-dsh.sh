@@ -72,6 +72,9 @@ else
   log "pnpm:      $(pnpm --version 2>/dev/null || echo missing) (corepack 不可用，请确保 pnpm >= 11)"
 fi
 
+CLIENT_PROFILE="official"
+export DSH_BUILD_CLIENT_PROFILE="$CLIENT_PROFILE"
+
 # --- cache hit check ----------------------------------------------------------
 BIN="$DSH_DIR/$BIN_REL"
 cache_hit=0
@@ -79,7 +82,8 @@ if [ -f "$MARKER" ]; then
   M_COMMIT="$(node -p "require('$MARKER').commit" 2>/dev/null || true)"
   M_NODE="$(node -p "require('$MARKER').node" 2>/dev/null || true)"
   M_PNPM="$(node -p "require('$MARKER').pnpm" 2>/dev/null || true)"
-  if [ "$M_COMMIT" = "$COMMIT" ] && [ "$M_NODE" = "$NODE_V" ] && [ "$M_PNPM" = "$PNPM" ] && [ -f "$BIN" ]; then
+  M_PROFILE="$(node -p "require('$MARKER').clientProfile" 2>/dev/null || true)"
+  if [ "$M_COMMIT" = "$COMMIT" ] && [ "$M_NODE" = "$NODE_V" ] && [ "$M_PNPM" = "$PNPM" ] && [ "$M_PROFILE" = "$CLIENT_PROFILE" ] && [ -f "$BIN" ]; then
     cache_hit=1
   fi
 fi
@@ -118,7 +122,7 @@ DURATION="$(( $(date +%s) - START ))"
 log "pnpm install 完成，耗时 ${DURATION}s"
 
 # --- build -------------------------------------------------------------------
-log "运行 pnpm run build（build:lib + build:web，来自上游 README）…"
+log "运行 pnpm run build（官方客户端品牌 DSH_BUILD_CLIENT_PROFILE=${CLIENT_PROFILE}）…"
 START="$(date +%s)"
 $PNPM run build
 DURATION="$(( $(date +%s) - START ))"
@@ -136,12 +140,13 @@ const marker = {
   node: process.argv[2],
   pnpm: process.argv[3],
   bin: process.argv[4],
+  clientProfile: process.argv[5],
   version: pkg.version,
   builtAt: new Date().toISOString(),
-  buildSeconds: Number(process.argv[5]),
+  buildSeconds: Number(process.argv[6]),
 };
-fs.writeFileSync(process.argv[6], JSON.stringify(marker, null, 2) + '\n');
-" "$COMMIT" "$NODE_V" "$PNPM" "$BIN_REL" "$DURATION" "$MARKER"
+fs.writeFileSync(process.argv[7], JSON.stringify(marker, null, 2) + '\n');
+" "$COMMIT" "$NODE_V" "$PNPM" "$BIN_REL" "$CLIENT_PROFILE" "$DURATION" "$MARKER"
 
 BIN_SIZE="$(du -h "$BIN" | cut -f1)"
 log "构建产物: $BIN_REL ($BIN_SIZE)，版本 $(node -p "require('$DSH_DIR/apps/cli/package.json').version" 2>/dev/null || echo unknown)"

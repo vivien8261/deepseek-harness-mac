@@ -266,8 +266,7 @@ async function pruneTree(root) {
     for (const entry of entries) {
       const path = join(directory, entry.name)
       if (entry.isDirectory()) {
-        const dropTypes = entry.name === 'types' && directory.endsWith(`${sep}lib`)
-        if (depth > 0 && (PRUNE_DIR_NAMES.has(entry.name) || dropTypes)) {
+        if (depth > 0 && PRUNE_DIR_NAMES.has(entry.name)) {
           await rm(path, { recursive: true, force: true })
           removed += 1
           continue
