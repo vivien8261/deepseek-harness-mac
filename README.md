@@ -1,8 +1,6 @@
 # DeepSeek Harness for macOS
 
-macOS 桌面壳：启动后立即显示窗口，在后台启动 dsh（DeepSeek Harness）的本地 Web 服务，再用 `WKWebView` 加载官方 Web UI。App 退出时同时结束服务进程。
-
-构建机从 git submodule（固定上游 tag `dsh-v0.1.1-rc.2`）编译 dsh，并把「dsh 生产闭包 + 官方 Node 24」一起打进 `.app`。安装到 `/Applications` 后，运行不再依赖源码仓库、git、pnpm 或本机 Homebrew Node。用户数据仍在 `~/.dsh`。
+macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官方 Web UI，退出时一并结束服务。
 
 ## 项目结构
 
