@@ -14,12 +14,13 @@ macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官
   - `LoadingOverlay.swift` — 启动覆盖层（状态、日志、重试按钮）
   - `LaunchLog.swift` — 诊断日志
   - `Info.plist` / `DSH.entitlements` / `Assets/`（应用图标）
+- `macos/upgrade.sh` — 一键升级：拉取上游最新 `dsh-v*` tag、更新 submodule、重建并安装 App
 - `macos/scripts/` — 构建脚本
   - `build-dsh.sh` — 从 submodule 源码构建 dsh（带缓存）
   - `stage-runtime.sh` — 打包独立运行时：dsh 生产闭包 + 官方 Node 24（带缓存）
   - `materialize-runtime.mjs` — 展开 deploy 树的 symlink、补齐缺失的 workspace 包、裁剪构建产物
   - `make-icon.sh` / `MakeIcon.swift` — 由 `whale-source.png` 生成 `AppIcon.icns`
-- `deepseek-harness/` — git submodule（浅克隆，固定 tag `dsh-v0.1.1-rc.2`）
+- `deepseek-harness/` — git submodule（浅克隆，钉在上游 `dsh-v*` 发布 tag；用 `macos/upgrade.sh` 升级）
 - `dist/` — 构建产物（`.app`、独立运行时、缓存标记），已 gitignore
 - `.cache/` — 构建缓存（corepack pnpm shim、Node 官方 tarball），已 gitignore
 
@@ -40,7 +41,7 @@ macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官
 ## 构建
 
 ```sh
-chmod +x macos/build.sh macos/scripts/make-icon.sh macos/scripts/build-dsh.sh macos/scripts/stage-runtime.sh
+chmod +x macos/build.sh macos/upgrade.sh macos/scripts/make-icon.sh macos/scripts/build-dsh.sh macos/scripts/stage-runtime.sh
 ./macos/build.sh
 open "/Applications/DeepSeek Harness.app"
 ```
@@ -72,12 +73,24 @@ open "/Applications/DeepSeek Harness.app"
 
 ## 升级 dsh 版本
 
+一键升级（查询上游最新 `dsh-v*` tag → 更新 submodule → 提交 → 重建并安装到 `/Applications`）：
+
 ```sh
-git -C deepseek-harness fetch --depth 1 origin tag <新tag>
-git -C deepseek-harness checkout <新tag>
-git add deepseek-harness && git commit -m "bump deepseek-harness to <新tag>"
-./macos/build.sh
+./macos/upgrade.sh
 ```
+
+常用选项：
+
+```sh
+./macos/upgrade.sh --check          # 只对比当前与最新，有更新时退出码 2
+./macos/upgrade.sh --list           # 列出上游 dsh-v* tag
+./macos/upgrade.sh --tag dsh-v0.1.1-rc.2   # 固定到指定 tag（可降级）
+./macos/upgrade.sh --no-build       # 只更新 submodule，不构建
+./macos/upgrade.sh --no-commit      # 更新后不提交
+./macos/upgrade.sh --force          # 已是目标 tag 也强制重建
+```
+
+脚本只认 `dsh-v*` 发布 tag（忽略 `vendor-*` / `python-*` / `landlock-run-*`）。已是最新时直接退出；tag 变化会让构建缓存失效并触发重建。
 
 ## 数据与日志
 
