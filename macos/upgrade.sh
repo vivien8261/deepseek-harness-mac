@@ -113,7 +113,7 @@ CURRENT_SHA="$(git -C "$DSH_DIR" rev-parse --short HEAD)"
 if [ -n "$REQUESTED_TAG" ]; then
   TARGET_TAG="$REQUESTED_TAG"
   if ! printf '%s\n' "$REMOTE_TAGS" | grep -Fxq "$TARGET_TAG"; then
-    fail "上游没有 tag：$TARGET_TAG（可用 --list 查看）"
+    fail "上游没有 tag：${TARGET_TAG}（可用 --list 查看）"
   fi
 else
   TARGET_TAG="$LATEST_TAG"
@@ -122,7 +122,7 @@ fi
 if [ -n "$CURRENT_TAG" ]; then
   log "当前: $CURRENT_TAG ($CURRENT_SHA)"
 else
-  log "当前: $CURRENT_SHA（未对准任何 tag）"
+  log "当前: ${CURRENT_SHA}（未对准任何 tag）"
 fi
 log "目标: $TARGET_TAG"
 log "最新: $LATEST_TAG"
@@ -156,7 +156,7 @@ if [ -z "$REQUESTED_TAG" ] && [ -n "$CURRENT_TAG" ] && [ "$already_on_target" !=
 fi
 
 if [ "$already_on_target" != "1" ]; then
-  log "拉取 $TARGET_TAG…"
+  log "拉取 ${TARGET_TAG}…"
   git -C "$DSH_DIR" fetch --depth 1 origin "tag" "$TARGET_TAG"
   git -C "$DSH_DIR" checkout --detach "$TARGET_TAG"
   NEW_SHA="$(git -C "$DSH_DIR" rev-parse --short HEAD)"
@@ -177,7 +177,7 @@ if [ "$already_on_target" != "1" ]; then
     fi
   fi
 else
-  log "--force：保持 $TARGET_TAG，强制重建"
+  log "--force：保持 ${TARGET_TAG}，强制重建"
 fi
 
 if [ "$NO_BUILD" = "1" ]; then

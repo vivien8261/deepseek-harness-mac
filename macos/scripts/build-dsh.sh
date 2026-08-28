@@ -122,6 +122,11 @@ DURATION="$(( $(date +%s) - START ))"
 log "pnpm install 完成，耗时 ${DURATION}s"
 
 # --- build -------------------------------------------------------------------
+# tsc -b is incremental: leftover lib/ + *.tsbuildinfo from a previous submodule
+# tag will be reused, and tsdown then bundles stale JS against new package
+# exports (MISSING_EXPORT). Always wipe generated output on a cache miss.
+log "清理上次构建产物（pnpm run clean）…"
+$PNPM run clean
 log "运行 pnpm run build（官方客户端品牌 DSH_BUILD_CLIENT_PROFILE=${CLIENT_PROFILE}）…"
 START="$(date +%s)"
 $PNPM run build
