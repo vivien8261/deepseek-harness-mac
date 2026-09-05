@@ -3,10 +3,12 @@
 # upgrade.sh — 一键把 deepseek-harness submodule 升到最新（或指定）dsh-v* tag，并重建 App。
 #
 # Usage:
-#   macos/upgrade.sh                 # 拉最新 dsh-v* tag → 更新 → 提交 → 构建
+#   macos/upgrade.sh                 # 拉最新 dsh-v* tag → 更新 → 提交 → 构建（默认 Chromium/Electron 壳）
 #   macos/upgrade.sh --check         # 只对比当前与最新，不改动
 #   macos/upgrade.sh --list          # 列出上游 dsh-v* tag
 #   macos/upgrade.sh --tag TAG       # 固定升到指定 tag（可降级）
+#   macos/upgrade.sh --shell chromium   # 默认；构建 Electron（Chromium）壳（build-electron.sh）
+#   macos/upgrade.sh --shell appkit     # 构建 WKWebView（AppKit）壳（build.sh）
 #   macos/upgrade.sh --no-build      # 只更新 submodule，不构建
 #   macos/upgrade.sh --no-commit     # 更新后不提交
 #   macos/upgrade.sh --force         # 已是目标 tag 也强制重建
@@ -24,6 +26,7 @@ NO_BUILD=0
 NO_COMMIT=0
 FORCE=0
 REQUESTED_TAG=""
+SHELL_KIND="chromium"
 
 log() { echo "[upgrade] $*"; }
 fail() { echo "[upgrade] ERROR: $*" >&2; exit 1; }
@@ -33,10 +36,12 @@ usage() {
 upgrade.sh — 一键把 deepseek-harness submodule 升到最新（或指定）dsh-v* tag，并重建 App。
 
 Usage:
-  macos/upgrade.sh                 # 拉最新 dsh-v* tag → 更新 → 提交 → 构建
+  macos/upgrade.sh                 # 拉最新 dsh-v* tag → 更新 → 提交 → 构建（默认 Chromium/Electron 壳）
   macos/upgrade.sh --check         # 只对比当前与最新，不改动
   macos/upgrade.sh --list          # 列出上游 dsh-v* tag
   macos/upgrade.sh --tag TAG       # 固定到指定 tag（可降级）
+  macos/upgrade.sh --shell chromium   # 默认；构建 Electron（Chromium）壳（build-electron.sh）
+  macos/upgrade.sh --shell appkit     # 构建 WKWebView（AppKit）壳（build.sh）
   macos/upgrade.sh --no-build      # 只更新 submodule，不构建
   macos/upgrade.sh --no-commit     # 更新后不提交
   macos/upgrade.sh --force         # 已是目标 tag 也强制重建
@@ -55,6 +60,15 @@ while [[ $# -gt 0 ]]; do
     --tag)
       [[ $# -ge 2 ]] || fail "--tag 需要参数"
       REQUESTED_TAG="$2"
+      shift 2
+      ;;
+    --shell)
+      [[ $# -ge 2 ]] || fail "--shell 需要参数"
+      case "$2" in
+        chromium|electron) SHELL_KIND="chromium" ;;
+        appkit|webview|wkwebview) SHELL_KIND="appkit" ;;
+        *) fail "--shell 仅支持 chromium|electron|appkit（默认 chromium）" ;;
+      esac
       shift 2
       ;;
     *) fail "未知参数: $1（见 --help）" ;;
@@ -185,5 +199,9 @@ if [ "$NO_BUILD" = "1" ]; then
   exit 0
 fi
 
-log "开始构建…"
-exec "$ROOT/build.sh"
+log "开始构建（SHELL_KIND=$SHELL_KIND）…"
+if [ "$SHELL_KIND" = "chromium" ]; then
+  exec "$ROOT/build-electron.sh"
+else
+  exec "$ROOT/build.sh"
+fi

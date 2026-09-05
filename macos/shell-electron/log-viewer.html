@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>运行日志</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      background: #ffffff;
+      color: #1f2329;
+      font: 11px/1.5 ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #15171c; color: #d7dae0; }
+    }
+    pre {
+      flex: 1;
+      overflow: auto;
+      padding: 9px 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      user-select: text;
+      cursor: text;
+    }
+    #tail {
+      position: fixed;
+      right: 14px;
+      bottom: 10px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: rgba(80, 110, 250, 0.9);
+      color: #fff;
+      font-size: 10px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <pre id="log"></pre>
+  <div id="tail">有新日志，点击回到底部</div>
+  <script>
+    const pre = document.getElementById('log')
+    const tail = document.getElementById('tail')
+    let buffer = ''
+    const LIMIT = 400000
+    const atBottom = () =>
+      pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24
+
+    function append(text) {
+      const wasAtBottom = atBottom()
+      buffer += text
+      if (buffer.length > LIMIT) buffer = buffer.slice(-LIMIT * 4 / 5)
+      pre.textContent = buffer
+      if (wasAtBottom) {
+        pre.scrollTop = pre.scrollHeight
+      } else {
+        tail.style.display = 'block'
+      }
+    }
+
+    pre.addEventListener('scroll', () => {
+      tail.style.display = atBottom() ? 'none' : 'block'
+    })
+    tail.addEventListener('click', () => {
+      pre.scrollTop = pre.scrollHeight
+      tail.style.display = 'none'
+    })
+
+    window.dshLog.onLine((line) => append(line))
+    pre.focus()
+  </script>
+</body>
+</html>

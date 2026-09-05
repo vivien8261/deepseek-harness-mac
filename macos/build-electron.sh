@@ -114,15 +114,18 @@ if [ "$DIST_ONLY" = "1" ]; then
 fi
 
 INSTALL_APP="/Applications/DeepSeek Harness.app"
-if pgrep -xq DSH >/dev/null 2>&1; then
-  echo "正在退出已运行的 DeepSeek Harness，以便安装到 /Applications…"
-  osascript -e 'tell application "DeepSeek Harness" to quit' >/dev/null 2>&1 || true
-  for _ in 1 2 3 4 5; do
-    pgrep -xq DSH >/dev/null 2>&1 || break
-    sleep 0.4
-  done
-  pkill -x DSH >/dev/null 2>&1 || true
-fi
+q() { osascript -e 'tell application "DeepSeek Harness" to quit' >/dev/null 2>&1 || true; }
+q
+for _ in 1 2 3 4 5; do
+  pgrep -xq DSH >/dev/null 2>&1 || break
+  sleep 0.4
+done
+pkill -x DSH >/dev/null 2>&1 || true
+# Electron keeps helper processes (GPU/renderer) alive after the main process
+# dies; they hold the .app bundle and break `rm -rf` below. Match the bundle
+# path so other Electron apps are never touched.
+pkill -9 -f "$INSTALL_APP/Contents/Frameworks/Electron" >/dev/null 2>&1 || true
+sleep 1
 rm -rf "$INSTALL_APP"
 ditto "$APP" "$INSTALL_APP"
 xattr -cr "$INSTALL_APP" >/dev/null 2>&1 || true

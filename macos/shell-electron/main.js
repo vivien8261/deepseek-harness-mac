@@ -7,24 +7,35 @@
 // that WebKit violates (repeated "Assistant stream raw chunk must be a
 // lossless JSON object" failures, blank transcript); Chrome and Electron
 // share the engine and are unaffected.
+//
+// UX notes (mirrors the AppKit shell where it makes sense):
+// - Edit/Window menus + ⌘L log panel, so clipboard and window shortcuts work;
+// - window frames are persisted across launches;
+// - the window only appears once the page is ready (no white flash);
+// - when the dsh server exits unexpectedly the user gets a retry dialog.
 'use strict'
 
-const { app, BrowserWindow, Menu, shell } = require('electron')
+const { app, BrowserWindow, Menu, dialog, nativeTheme, shell, screen } = require('electron')
 const { spawn } = require('node:child_process')
 const { join, dirname } = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
 const net = require('node:net')
-const { pathToFileURL, fileURLToPath } = require('node:url')
 
 const PORT_RANGE = { start: 3080, end: 3180 }
 const READY_RE = /dsh web:\s+(https?:\/\/[^\s]+)/
+const MAX_LOG_BUFFER = 200000
 
 let mainWindow = null
+let logWindow = null
+let logWindowReady = false
+let logBuffer = ''
 let server = null
 let serverPort = 0
 let serverToken = null
 let logHandle = null
+let quitInProgress = false
+let serverDownPromptShown = false
 
 // ---------------------------------------------------------------------------
 // Logging (mirrors the AppKit shell: ~/Library/Logs/DeepSeekHarness.log)
@@ -32,6 +43,8 @@ let logHandle = null
 
 function logLine(message) {
   const line = `${new Date().toISOString()} ${message}\n`
+  logBuffer += line
+  if (logBuffer.length > MAX_LOG_BUFFER) logBuffer = logBuffer.slice(-MAX_LOG_BUFFER * 4 / 5)
   process.stdout.write(line)
   try {
     if (!logHandle) {
@@ -42,6 +55,9 @@ function logLine(message) {
     fs.writeSync(logHandle, line)
   } catch (error) {
     // Diagnostics must never take the shell down.
+  }
+  if (logWindow && logWindowReady && !logWindow.isDestroyed()) {
+    logWindow.webContents.send('dsh-log-line', line)
   }
 }
 
@@ -207,12 +223,19 @@ function startServer() {
     child.stdout.on('data', onData)
     child.stderr.on('data', onData)
 
-    child.on('exit', () => {
+    child.on('exit', (code, signal) => {
       server = null
+      serverToken = null
       clearOwnershipLock()
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        // Keep the window; the user may retry.
-      }
+      if (quitInProgress) return
+      logLine(`dsh web exited unexpectedly code=${code} signal=${signal ?? 'none'}`)
+      // Debounce: a single crash can fire more than one exit/close event.
+      if (serverDownPromptShown) return
+      serverDownPromptShown = true
+      setTimeout(() => {
+        serverDownPromptShown = false
+        promptServerDown()
+      }, 800)
     })
 
     setTimeout(() => {
@@ -244,6 +267,144 @@ function stopServer() {
   }, 200)
 }
 
+async function restartServer() {
+  logLine('restarting dsh web…')
+  stopServer()
+  serverToken = null
+  try {
+    const url = await startServer()
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(url)
+  } catch (error) {
+    logLine(`restart failed: ${error.message}`)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: 'DeepSeek Harness',
+        message: '本地服务重启失败',
+        detail: error.message,
+        buttons: ['确定'],
+      })
+    }
+  }
+}
+
+function promptServerDown() {
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  const options = {
+    type: 'warning',
+    title: 'DeepSeek Harness',
+    message: '本地 dsh 服务已意外退出',
+    detail: '页面可能无法继续工作。可以重启服务，或查看日志了解原因。',
+    buttons: ['重启服务', '查看日志', '退出'],
+    defaultId: 0,
+    cancelId: 2,
+  }
+  const finish = (response) => {
+    if (response === 0) { restartServer(); return }
+    if (response === 1) { toggleLogPanel(); return }
+    quitInProgress = true
+    app.quit()
+  }
+  if (parent) {
+    dialog.showMessageBox(parent, options).then(({ response }) => finish(response))
+  } else {
+    dialog.showMessageBox(options).then(({ response }) => finish(response))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Window state persistence
+// ---------------------------------------------------------------------------
+
+function windowStatePath() {
+  return join(app.getPath('userData'), 'window-state.json')
+}
+
+function loadWindowState() {
+  try {
+    const state = JSON.parse(fs.readFileSync(windowStatePath(), 'utf8'))
+    if (typeof state.width !== 'number' || typeof state.height !== 'number') return null
+    if (state.width < 900 || state.height < 600) return null
+    const x = typeof state.x === 'number' ? state.x : 0
+    const y = typeof state.y === 'number' ? state.y : 0
+    // If the saved frame is off every screen (e.g. a display was unplugged),
+    // keep only the size and let the OS place the window.
+    const onScreen = screen.getAllDisplays().some((display) => {
+      const area = display.workArea
+      return x < area.x + area.width && x + state.width > area.x &&
+             y < area.y + area.height && y + state.height > area.y
+    })
+    if (!onScreen) return { width: state.width, height: state.height }
+    return { x, y, width: state.width, height: state.height }
+  } catch {
+    return null
+  }
+}
+
+let stateSaveTimer = null
+
+function saveWindowStateNow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try {
+    const bounds = mainWindow.getNormalBounds()
+    fs.writeFileSync(windowStatePath(), JSON.stringify(bounds))
+  } catch {
+    // non-fatal
+  }
+}
+
+function scheduleWindowStateSave() {
+  clearTimeout(stateSaveTimer)
+  stateSaveTimer = setTimeout(saveWindowStateNow, 600)
+}
+
+// ---------------------------------------------------------------------------
+// Log panel (⌘L)
+// ---------------------------------------------------------------------------
+
+function toggleLogPanel() {
+  if (logWindow && !logWindow.isDestroyed()) {
+    if (logWindow.isVisible()) {
+      logWindow.hide()
+      return
+    }
+    logWindow.show()
+    logWindow.focus()
+    return
+  }
+  createLogWindow()
+}
+
+function createLogWindow() {
+  logWindowReady = false
+  logWindow = new BrowserWindow({
+    width: 980,
+    height: 560,
+    minWidth: 480,
+    minHeight: 240,
+    title: '运行日志',
+    show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#15171c' : '#ffffff',
+    webPreferences: {
+      preload: join(__dirname, 'log-viewer-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  logWindow.setAutoHideMenuBar(true)
+  logWindow.loadFile(join(__dirname, 'log-viewer.html'))
+  logWindow.webContents.on('did-finish-load', () => {
+    logWindowReady = true
+    logWindow.webContents.send('dsh-log-line', logBuffer)
+    logWindow.show()
+  })
+  logWindow.on('closed', () => {
+    logWindow = null
+    logWindowReady = false
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
@@ -254,18 +415,39 @@ function createWindow(url) {
     ? `DeepSeek Harness  ·  ${manifest.version}`
     : 'DeepSeek Harness'
 
+  const state = loadWindowState()
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    ...(state?.x != null && state?.y != null ? { x: state.x, y: state.y } : {}),
+    width: state?.width ?? 1280,
+    height: state?.height ?? 800,
     minWidth: 900,
     minHeight: 600,
     title: appTitle,
+    // Show only once the page has painted, so the user never sees a blank
+    // window flash (fall back to showing after 15s no matter what).
+    show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#15171c' : '#ffffff',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   })
+  const showTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) mainWindow.show()
+  }, 15000)
+  showTimer.unref()
+  mainWindow.once('ready-to-show', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
+  })
+
+  mainWindow.on('resize', scheduleWindowStateSave)
+  mainWindow.on('move', scheduleWindowStateSave)
+  mainWindow.on('close', () => {
+    clearTimeout(stateSaveTimer)
+    saveWindowStateNow()
+  })
+
   // Keep the fixed app title; the page (and its dynamic document.title) must
   // not retitle the window.
   mainWindow.on('page-title-updated', (event) => { event.preventDefault() })
@@ -308,31 +490,93 @@ function createWindow(url) {
     if (handOff(target)) event.preventDefault()
   })
 
+  // Right-click menu: a Chromium shell ships no default context menu, so
+  // expose the standard edit commands here (⌘C/⌘V/⌘X keep working via the
+  // Edit menu; this covers mouse users and the non-mac case).
+  mainWindow.webContents.on('context-menu', (event, params) => {
+    const items = [
+      { role: 'undo', enabled: params.editFlags.canUndo },
+      { role: 'redo', enabled: params.editFlags.canRedo },
+      { type: 'separator' },
+      { role: 'cut', enabled: params.editFlags.canCut },
+      { role: 'copy', enabled: params.editFlags.canCopy },
+      { role: 'paste', enabled: params.editFlags.canPaste },
+      { role: 'selectAll', enabled: params.editFlags.canSelectAll },
+    ]
+    Menu.buildFromTemplate(items).popup({ window: mainWindow })
+  })
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    logLine(`page load failed: ${errorDescription} (${errorCode}) ${validatedURL}`)
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) mainWindow.show()
+  })
+
   mainWindow.loadURL(url)
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
+// ---------------------------------------------------------------------------
+// Menu
+// ---------------------------------------------------------------------------
+
+function menuLabels() {
+  const zh = /^zh/i.test(app.getLocale())
+  return {
+    edit: zh ? '编辑' : 'Edit',
+    view: zh ? '显示' : 'View',
+    window: zh ? '窗口' : 'Window',
+    help: zh ? '帮助' : 'Help',
+    serverLogs: zh ? '服务日志' : 'Server Logs',
+    openLogFile: zh ? '打开日志文件' : 'Open Log File',
+  }
+}
+
 function buildMenu() {
   const isMac = process.platform === 'darwin'
+  const L = menuLabels()
   const template = [
     ...(isMac ? [{ role: 'appMenu' }] : []),
     {
-      label: 'View',
+      label: L.edit,
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'delete' },
+        ...(isMac ? [{ type: 'separator' }, { role: 'selectAll' }] : [{ role: 'selectAll' }]),
+      ],
+    },
+    {
+      label: L.view,
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
+        { type: 'separator' },
         { role: 'toggleDevTools' },
+        { type: 'separator' },
+        {
+          label: L.serverLogs,
+          accelerator: 'CmdOrCtrl+L',
+          click: () => toggleLogPanel(),
+        },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
       ],
     },
+    ...(isMac
+      ? [{ role: 'windowMenu', label: L.window }]
+      : [{ role: 'window', label: L.window }]),
     {
       role: 'help',
+      label: L.help,
       submenu: [
         {
-          label: '打开日志文件',
+          label: L.openLogFile,
           click: () => {
             shell.openPath(join(os.homedir(), 'Library/Logs', 'DeepSeekHarness.log'))
           },
@@ -360,15 +604,31 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     buildMenu()
+    let url = null
     try {
       await cleanupOwnedOrphan()
-      const url = await startServer()
+      url = await startServer()
+    } catch (error) {
+      quitInProgress = true
+      logLine(`service startup failed: ${error.message}`)
+      dialog.showErrorBox(
+        'DeepSeek Harness',
+        `本地服务启动失败：\n${error.message}\n\n详情见日志：~/Library/Logs/DeepSeekHarness.log`
+      )
+      app.quit()
+      return
+    }
+    try {
       createWindow(url)
     } catch (error) {
-      logLine(`startup failed: ${error.message}`)
-      const dialog = require('electron').dialog
-      dialog.showErrorBox('DeepSeek Harness', `本地服务启动失败：\n${error.message}`)
+      quitInProgress = true
+      logLine(`window startup failed: ${error.message}`)
+      dialog.showErrorBox(
+        'DeepSeek Harness',
+        `窗口启动失败：\n${error.message}\n\n详情见日志：~/Library/Logs/DeepSeekHarness.log`
+      )
       app.quit()
+      return
     }
 
     app.on('activate', () => {
@@ -377,12 +637,14 @@ if (!gotLock) {
   })
 
   app.on('window-all-closed', () => {
+    quitInProgress = true
     stopServer()
     clearOwnershipLock()
     app.quit()
   })
 
   app.on('before-quit', () => {
+    quitInProgress = true
     stopServer()
     clearOwnershipLock()
   })
