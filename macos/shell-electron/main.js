@@ -249,18 +249,26 @@ function stopServer() {
 // ---------------------------------------------------------------------------
 
 function createWindow(url) {
+  const manifest = runtimeManifest(resourcesPath())
+  const appTitle = manifest.version
+    ? `DeepSeek Harness  ·  ${manifest.version}`
+    : 'DeepSeek Harness'
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: 'DeepSeek Harness',
+    title: appTitle,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   })
+  // Keep the fixed app title; the page (and its dynamic document.title) must
+  // not retitle the window.
+  mainWindow.on('page-title-updated', (event) => { event.preventDefault() })
 
   const origin = new URL(url).origin
 
