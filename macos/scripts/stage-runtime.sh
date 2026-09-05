@@ -21,7 +21,7 @@ NODE_DIR="$RUNTIME/node"
 MARKER="$RUNTIME/runtime.json"
 BIN_REL="lib/bin.js"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RECIPE="4"
+RECIPE="5"
 
 log() { echo "[runtime] $*"; }
 fail() { echo "[runtime] ERROR: $*" >&2; exit 1; }
@@ -78,8 +78,7 @@ cache_hit=0
 if [ -f "$MARKER" ] && [ -f "$STAGING/$BIN_REL" ] && [ -x "$NODE_DIR/bin/node" ]; then
   M_COMMIT="$(node -p "require('$MARKER').commit" 2>/dev/null || true)"
   M_NODE="$(node -p "require('$MARKER').node" 2>/dev/null || true)"
-  M_RECIPE="$(node -p "require('$MARKER').recipe" 2>/dev/null || true)"
-  if [ "$M_COMMIT" = "$COMMIT" ] && [ "$M_NODE" = "$NODE_V" ] && [ "$M_RECIPE" = "$RECIPE" ]; then
+  if [ "$M_COMMIT" = "$COMMIT" ] && [ "$M_NODE" = "$NODE_V" ]; then
     cache_hit=1
   fi
 fi
@@ -87,6 +86,17 @@ fi
 if [ "$cache_hit" = "1" ]; then
   log "缓存命中：commit=${COMMIT} node=${NODE_V}，跳过 deploy（删除 ${MARKER} 可强制重建）"
   node "$SCRIPT_DIR/patch-wkwebview-auth.mjs" "$STAGING"
+  # Idempotent pipeline steps may change without invalidating the cached tree;
+  # record the current recipe and patch outcome so the shell can verify the
+  # deployed runtime before use.
+  node -e "
+const fs = require('fs');
+const marker = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+marker.recipe = process.argv[2];
+marker.authPatch = process.argv[3];
+marker.stagedAt = new Date().toISOString();
+fs.writeFileSync(process.argv[1], JSON.stringify(marker, null, 2) + '\n');
+" "$MARKER" "$RECIPE" "applied"
   exit 0
 fi
 
@@ -189,10 +199,11 @@ const marker = {
   arch: process.argv[4],
   bin: process.argv[5],
   recipe: process.argv[6],
+  authPatch: process.argv[7],
   stagedAt: new Date().toISOString(),
 };
-fs.writeFileSync(process.argv[7], JSON.stringify(marker, null, 2) + '\n');
-" "$COMMIT" "$NODE_V" "$VERSION" "$NODE_ARCH" "$BIN_REL" "$RECIPE" "$MARKER"
+fs.writeFileSync(process.argv[8], JSON.stringify(marker, null, 2) + '\n');
+" "$COMMIT" "$NODE_V" "$VERSION" "$NODE_ARCH" "$BIN_REL" "$RECIPE" "applied" "$MARKER"
 
 SIZE="$(du -sh "$RUNTIME" | cut -f1)"
 log "独立运行时已就绪：${RUNTIME} (${SIZE})"

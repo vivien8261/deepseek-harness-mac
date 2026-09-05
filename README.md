@@ -20,6 +20,7 @@ macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官
   - `stage-runtime.sh` — 打包独立运行时：dsh 生产闭包 + 官方 Node 24（带缓存）
   - `materialize-runtime.mjs` — 展开 deploy 树的 symlink、补齐缺失的 workspace 包、裁剪构建产物
   - `patch-wkwebview-auth.mjs` — 让 WKWebView 能连上 0.1.3 的实时 WebSocket（SameSite=Lax + 启动 token）
+  - `verify-runtime-auth.sh` — 校验运行时已含 WebSocket 鉴权补丁，缺失时构建大声失败
   - `make-icon.sh` / `MakeIcon.swift` — 由 `whale-source.png` 生成 `AppIcon.icns`
 - `deepseek-harness/` — git submodule（浅克隆，钉在上游 `dsh-v*` 发布 tag；用 `macos/upgrade.sh` 升级）
 - `dist/` — 构建产物（`.app`、独立运行时、缓存标记），已 gitignore
@@ -42,17 +43,24 @@ macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官
 ## 构建
 
 ```sh
-chmod +x macos/build.sh macos/upgrade.sh macos/scripts/make-icon.sh macos/scripts/build-dsh.sh macos/scripts/stage-runtime.sh
+chmod +x macos/build.sh macos/upgrade.sh macos/scripts/make-icon.sh macos/scripts/build-dsh.sh macos/scripts/stage-runtime.sh macos/scripts/verify-runtime-auth.sh
 ./macos/build.sh
 open "/Applications/DeepSeek Harness.app"
+```
+
+只重建产物、不动运行进程、不安装到 `/Applications`：
+
+```sh
+./macos/build.sh --dist-only   # 产物在 dist/DeepSeek Harness.app，之后手动拷贝安装
 ```
 
 `macos/build.sh` 依次执行：
 
 1. 初始化 submodule（缺失时 `git submodule update --init --depth 1`）
 2. `build-dsh.sh`：按上游方式从源码构建 dsh（`pnpm install` + `pnpm run build`，client profile 为 `official`）
-3. `stage-runtime.sh`：`pnpm deploy --prod` 生成 dsh 生产闭包、下载官方 Node 24 二进制，再解开 symlink 并裁剪构建产物，写入 `dist/runtime/`
-4. 编译 Swift 壳，把 `dist/runtime/` 内容装入 `Contents/Resources/`，生成 `.app`（ad-hoc 签名），安装到 `/Applications`
+3. `stage-runtime.sh`：`pnpm deploy --prod` 生成 dsh 生产闭包、下载官方 Node 24 二进制，再解开 symlink、裁剪构建产物、应用 WebSocket 鉴权补丁，写入 `dist/runtime/` 与 `runtime.json`（含 `authPatch` 状态）
+4. `verify-runtime-auth.sh`：确认运行时已含 `hasLaunchToken` + `SameSite=Lax`，缺失即构建失败，避免把坏运行时打进 App
+5. 编译 Swift 壳，把 `dist/runtime/` 内容装入 `Contents/Resources/`，生成 `.app`（ad-hoc 签名）；默认安装到 `/Applications`（`--dist-only` 时跳过）
 
 构建脚本会自动检测本机代理（`127.0.0.1:7890`）并用于依赖下载。构建结果安装到 `/Applications/DeepSeek Harness.app`；运行时不依赖源码仓库、git、pnpm 或 Homebrew Node，因此源码仓库在安装后可删除或移动。
 
@@ -68,7 +76,7 @@ open "/Applications/DeepSeek Harness.app"
 ## 构建缓存
 
 - dsh 编译标记：`dist/.dsh-build-state.json`（记录 submodule commit、node、pnpm、client profile、产物路径）
-- 独立运行时标记：`dist/runtime/runtime.json`（记录 commit、node、版本、arch、recipe）
+- 独立运行时标记：`dist/runtime/runtime.json`（记录 commit、node、版本、arch、recipe、`authPatch`）
 - 命中条件：标记中的字段与当前环境一致，且对应产物存在；任一变化（如升级 submodule tag、更换 Node 版本）都会触发重建
 - 删除对应标记文件可强制重建
 
@@ -98,3 +106,5 @@ open "/Applications/DeepSeek Harness.app"
 - 会话与设置保存在 `~/.dsh`，不会随 App 覆盖而丢失
 - 运行日志：`~/Library/Logs/DeepSeekHarness.log`（启动事件 + 包内 `console.log` / `console.error`）
 - App 内查看：`View ▸ Server Logs`（⌘L）；用系统应用打开：`Help ▸ Open Log File`
+- 启动日志会显示 `鉴权补丁：已应用/缺失`：缺失表示内置运行时已过期，重新运行 `macos/build.sh` 即可（否则页面能打开但实时输出收不到）
+- 正常退出时 dsh 子进程一并结束；若 App 被强杀（如 `kill -9`），其 dsh web 进程可能残留并占用端口——新启动的 App 只清理自身记录的孤儿（`~/.dsh/.dsh-web-macos.json`），不会影响终端里手动运行的 `dsh web`

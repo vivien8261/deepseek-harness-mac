@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# --dist-only: build artifacts into dist/ without quitting running processes
+# or replacing /Applications/DeepSeek Harness.app.
+DIST_ONLY=0
+if [[ "${1:-}" == "--dist-only" || "${DSH_DIST_ONLY:-0}" == "1" ]]; then
+  DIST_ONLY=1
+fi
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$ROOT/.." && pwd)"
 DIST="$REPO/dist"
@@ -23,6 +30,7 @@ if [ ! -e "$REPO/deepseek-harness/.git" ]; then
 fi
 "$ROOT/scripts/build-dsh.sh" "$REPO"
 "$ROOT/scripts/stage-runtime.sh" "$REPO"
+"$ROOT/scripts/verify-runtime-auth.sh" "$REPO/dist/runtime/dsh"
 
 "$ROOT/scripts/make-icon.sh"
 
@@ -46,9 +54,15 @@ ditto "$REPO/dist/runtime/dsh" "$RESOURCES/dsh"
 ditto "$REPO/dist/runtime/node" "$RESOURCES/node"
 cp "$REPO/dist/runtime/runtime.json" "$RESOURCES/runtime.json"
 chmod 755 "$RESOURCES/node/bin/node"
+"$ROOT/scripts/verify-runtime-auth.sh" "$RESOURCES/dsh"
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$APP"
+fi
+
+if [ "$DIST_ONLY" = "1" ]; then
+  echo "Built $APP (--dist-only: 未退出任何进程，未安装到 /Applications)"
+  exit 0
 fi
 
 INSTALL_APP="/Applications/DeepSeek Harness.app"

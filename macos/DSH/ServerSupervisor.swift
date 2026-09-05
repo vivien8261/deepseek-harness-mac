@@ -1,6 +1,9 @@
 import Darwin
 import Foundation
 
+@_silgen_name("proc_pidpath")
+private func proc_pidpath(_ pid: pid_t, _ buffer: UnsafeMutableRawPointer?, _ buffersize: UInt32) -> Int32
+
 private var reaperPid: pid_t = 0
 
 private func reapSupervisedProcess() {
@@ -91,6 +94,8 @@ final class ServerSupervisor {
             return
         }
 
+        cleanupOwnedOrphan(bundledNode: runtime.nodeExecutable)
+
         lock.lock()
         selectedPort = port
         reportedVersion = true
@@ -108,6 +113,12 @@ final class ServerSupervisor {
         emitLog("运行时：\(runtime.dshRoot)\n")
         emitLog("服务端口：\(port)\n")
         emitLog("执行：\(runtime.nodeExecutable) \(arguments.joined(separator: " "))\n")
+        if runtime.authPatch == "applied" {
+            emitLog("鉴权补丁：已应用\n")
+        } else {
+            LaunchLog.write("runtime authPatch=\(runtime.authPatch)")
+            emitLog("⚠️ 鉴权补丁：缺失（\(runtime.authPatch)）—— 页面实时输出可能不可用，请重新运行 macos/build.sh\n")
+        }
 
         callbackQueue.async { [weak self] in
             guard let self else { return }
@@ -147,6 +158,7 @@ final class ServerSupervisor {
         reaperPid = 0
         lock.unlock()
 
+        clearOwnershipLock()
         source?.cancel()
         handle?.readabilityHandler = nil
         try? handle?.close()
@@ -163,6 +175,7 @@ final class ServerSupervisor {
         pid = 0
         reaperPid = 0
         lock.unlock()
+        clearOwnershipLock()
         if currentPid > 0 {
             ProcessGroup.killImmediately(currentPid)
         }
@@ -198,6 +211,57 @@ final class ServerSupervisor {
         lock.lock()
         exitSource = source
         lock.unlock()
+
+        writeOwnershipLock(pid: handle.pid, port: selectedPort)
+    }
+
+    /// Record the spawned dsh web process so a later launch can reclaim it
+    /// after the app was force-killed (atexit reaper does not run on SIGKILL).
+    private func writeOwnershipLock(pid: pid_t, port: Int) {
+        let directory = ownershipLockURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let payload: [String: Any] = [
+            "pid": Int(pid),
+            "port": port,
+            "startedAt": ISO8601DateFormatter().string(from: Date()),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        try? data.write(to: ownershipLockURL, options: .atomic)
+        LaunchLog.write("ownership lock pid=\(pid) port=\(port)")
+    }
+
+    private func clearOwnershipLock() {
+        try? FileManager.default.removeItem(at: ownershipLockURL)
+    }
+
+    /// Terminate the previously recorded dsh web process when it still runs and
+    /// its executable still matches the bundled node. Only pids this app wrote
+    /// to the lock file are ever touched; user-launched `dsh web` never is.
+    private func cleanupOwnedOrphan(bundledNode: String) {
+        guard let data = try? Data(contentsOf: ownershipLockURL),
+              let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawPid = record["pid"] as? Int, rawPid > 0
+        else {
+            return
+        }
+        let pid = pid_t(rawPid)
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let filled = buffer.withUnsafeMutableBufferPointer { pointer in
+            proc_pidpath(pid, pointer.baseAddress, UInt32(pointer.count))
+        }
+        let executable = filled > 0 ? String(cString: buffer) : ""
+        guard executable == bundledNode, kill(pid, 0) == 0 else {
+            clearOwnershipLock()
+            return
+        }
+        LaunchLog.write("terminating orphaned dsh web pid=\(pid)")
+        ProcessGroup.terminate(pid, waitSeconds: 3)
+        clearOwnershipLock()
+    }
+
+    private var ownershipLockURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".dsh/.dsh-web-macos.json", isDirectory: false)
     }
 
     private func handleOutput(_ chunk: String) {
@@ -277,6 +341,7 @@ final class ServerSupervisor {
         if currentPid > 0 {
             _ = ProcessGroup.waitNonBlocking(currentPid)
         }
+        clearOwnershipLock()
         LaunchLog.write("process exited pid=\(currentPid) stopping=\(wasStopping) ready=\(wasReady)")
 
         if wasStopping {

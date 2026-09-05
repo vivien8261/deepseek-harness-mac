@@ -9,6 +9,8 @@ struct BundledRuntime {
     let version: String
     let commit: String
     let nodeVersion: String
+    /// "applied" | "missing" | "unknown" — WKWebView WebSocket auth patch status.
+    let authPatch: String
 }
 
 enum NodeEnvironment {
@@ -30,6 +32,7 @@ enum NodeEnvironment {
         var version = "unknown"
         var commit = "unknown"
         var nodeVersion = "unknown"
+        var authPatch = "unknown"
         let manifestURL = URL(fileURLWithPath: resources + "/runtime.json")
         if let data = try? Data(contentsOf: manifestURL),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -37,6 +40,7 @@ enum NodeEnvironment {
             version = json["version"] as? String ?? version
             commit = json["commit"] as? String ?? commit
             nodeVersion = json["node"] as? String ?? nodeVersion
+            authPatch = json["authPatch"] as? String ?? authPatch
         }
 
         return BundledRuntime(
@@ -46,7 +50,8 @@ enum NodeEnvironment {
             nodeBinDir: (node as NSString).deletingLastPathComponent,
             version: version,
             commit: commit,
-            nodeVersion: nodeVersion
+            nodeVersion: nodeVersion,
+            authPatch: authPatch
         )
     }
 
