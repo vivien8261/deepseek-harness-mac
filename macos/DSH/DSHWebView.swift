@@ -29,6 +29,7 @@ final class DSHWebView: NSView {
 
     func load(_ url: URL) {
         currentURL = url
+        installLaunchTokenScript(url)
         webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
 
@@ -79,6 +80,65 @@ final class DSHWebView: NSView {
         return scheme == "about" || scheme == "blob" || scheme == "data"
     }
 
+    /// 0.1.3 authenticates the live WebSocket with an HttpOnly SameSite=Strict
+    /// cookie. WKWebView often omits that cookie on the upgrade, so the page
+    /// can submit turns while the journal stream stays empty. Attach the
+    /// process launch token to `/api/remote.mux` as a fallback.
+    private func installLaunchTokenScript(_ url: URL) {
+        let token = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == "token" })?
+            .value ?? ""
+        let escaped = token
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let source = """
+        (function () {
+          var token = '\(escaped)';
+          if (!token) return;
+          var Orig = window.WebSocket;
+          if (!Orig || Orig.__dshLaunchTokenPatched) return;
+          function Wrapped(url, protocols) {
+            try {
+              var parsed = new URL(url, location.href);
+              if (parsed.pathname === '/api/remote.mux' && !parsed.searchParams.has('token')) {
+                parsed.searchParams.set('token', token);
+                url = parsed.href;
+              }
+            } catch (error) {}
+            return protocols === undefined ? new Orig(url) : new Orig(url, protocols);
+          }
+          Wrapped.prototype = Orig.prototype;
+          Object.setPrototypeOf(Wrapped, Orig);
+          Wrapped.CONNECTING = Orig.CONNECTING;
+          Wrapped.OPEN = Orig.OPEN;
+          Wrapped.CLOSING = Orig.CLOSING;
+          Wrapped.CLOSED = Orig.CLOSED;
+          Wrapped.__dshLaunchTokenPatched = true;
+          window.WebSocket = Wrapped;
+        })();
+        """
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(
+            source: source,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+    }
+
+    private func relaxAuthCookies(in webView: WKWebView) {
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+        store.getAllCookies { cookies in
+            for cookie in cookies where cookie.name.hasPrefix("dsh-auth-") {
+                guard var properties = cookie.properties else { continue }
+                properties[.sameSitePolicy] = HTTPCookieStringPolicy.sameSiteLax
+                guard let relaxed = HTTPCookie(properties: properties) else { continue }
+                store.setCookie(relaxed)
+            }
+        }
+    }
+
     @discardableResult
     private func openInDefaultBrowser(_ url: URL) -> Bool {
         let scheme = url.scheme?.lowercased()
@@ -110,6 +170,7 @@ extension DSHWebView: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        relaxAuthCookies(in: webView)
         delegate?.dshWebViewDidFinish(self)
     }
 

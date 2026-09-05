@@ -19,6 +19,7 @@ macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官
   - `build-dsh.sh` — 从 submodule 源码构建 dsh（带缓存）
   - `stage-runtime.sh` — 打包独立运行时：dsh 生产闭包 + 官方 Node 24（带缓存）
   - `materialize-runtime.mjs` — 展开 deploy 树的 symlink、补齐缺失的 workspace 包、裁剪构建产物
+  - `patch-wkwebview-auth.mjs` — 让 WKWebView 能连上 0.1.3 的实时 WebSocket（SameSite=Lax + 启动 token）
   - `make-icon.sh` / `MakeIcon.swift` — 由 `whale-source.png` 生成 `AppIcon.icns`
 - `deepseek-harness/` — git submodule（浅克隆，钉在上游 `dsh-v*` 发布 tag；用 `macos/upgrade.sh` 升级）
 - `dist/` — 构建产物（`.app`、独立运行时、缓存标记），已 gitignore
@@ -59,7 +60,7 @@ open "/Applications/DeepSeek Harness.app"
 
 1. 窗口立即出现，覆盖层显示启动日志（内置 dsh 版本、commit、Node 版本、端口等）。
 2. 选择 `3080–3180` 中第一个空闲端口，spawn 包内 `node` 运行 `Contents/Resources/dsh/lib/bin.js web --host 127.0.0.1 --port <端口> --no-open`，工作目录固定为 `$HOME`（Web UI 中仍需手动选择 workspace）。
-3. 就绪检测：解析服务输出的 `dsh web: <url>` 就绪行（已去掉 ANSI 转义），同时对端口做 HTTP 探测作为兜底；任一先命中即加载页面。
+3. 就绪检测：解析服务输出的 `dsh web: <url>` 就绪行（已去掉 ANSI 转义）后再打开带启动 token 的地址；不能用裸 `/` 探测结果打开页面，否则 0.1.3 的实时输出通道会连不上。
 4. 页面在 App 内的 `WKWebView` 中加载；指向本地 dsh 服务的链接保持在 App 内，外部链接交给系统默认浏览器打开。
 5. 窗口标题显示已报告的 dsh 版本；`View ▸ Reload`（⌘R）在服务就绪后重载页面，未就绪时重试启动。
 6. 退出时对进程组及其全部子进程发送 `SIGTERM`，5 秒后仍未退出则 `SIGKILL`。

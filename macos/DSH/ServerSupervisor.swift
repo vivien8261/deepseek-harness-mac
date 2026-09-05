@@ -41,7 +41,6 @@ final class ServerSupervisor {
         options: []
     )
     private let callbackQueue = DispatchQueue.main
-    private var pollTimer: DispatchSourceTimer?
     private var selectedPort = 0
     private static var reaperInstalled = false
 
@@ -124,7 +123,6 @@ final class ServerSupervisor {
             )
             LaunchLog.write("spawned pid=\(handle.pid)")
             attach(handle: handle)
-            startHTTPProbe(port: port)
         } catch {
             LaunchLog.write("spawn failed: \(error.localizedDescription)")
             callbackQueue.async { [weak self] in
@@ -143,15 +141,12 @@ final class ServerSupervisor {
         let currentPid = pid
         let source = exitSource
         let handle = outputHandle
-        let timer = pollTimer
         pid = 0
         exitSource = nil
         outputHandle = nil
-        pollTimer = nil
         reaperPid = 0
         lock.unlock()
 
-        timer?.cancel()
         source?.cancel()
         handle?.readabilityHandler = nil
         try? handle?.close()
@@ -165,12 +160,9 @@ final class ServerSupervisor {
         lock.lock()
         stopping = true
         let currentPid = pid
-        let timer = pollTimer
         pid = 0
         reaperPid = 0
-        pollTimer = nil
         lock.unlock()
-        timer?.cancel()
         if currentPid > 0 {
             ProcessGroup.killImmediately(currentPid)
         }
@@ -239,36 +231,6 @@ final class ServerSupervisor {
         }
     }
 
-    private func startHTTPProbe(port: Int) {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/") else { return }
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + 0.8, repeating: 0.4)
-        timer.setEventHandler { [weak self] in
-            self?.probe(url)
-        }
-        timer.resume()
-        lock.lock()
-        pollTimer?.cancel()
-        pollTimer = timer
-        lock.unlock()
-    }
-
-    private func probe(_ url: URL) {
-        lock.lock()
-        let skip = becameReady || stopping
-        lock.unlock()
-        if skip { return }
-
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1.2)
-        request.httpMethod = "GET"
-        URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
-            guard let http = response as? HTTPURLResponse, (200..<400).contains(http.statusCode) else {
-                return
-            }
-            self?.markReady(url, source: "http-\(http.statusCode)")
-        }.resume()
-    }
-
     private func markReady(_ url: URL, source: String) {
         lock.lock()
         if becameReady || stopping {
@@ -276,10 +238,7 @@ final class ServerSupervisor {
             return
         }
         becameReady = true
-        let timer = pollTimer
-        pollTimer = nil
         lock.unlock()
-        timer?.cancel()
         LaunchLog.write("ready via \(source) \(url.absoluteString)")
         callbackQueue.async { [weak self] in
             guard let self else { return }
@@ -298,11 +257,8 @@ final class ServerSupervisor {
         exitSource = nil
         let handle = outputHandle
         outputHandle = nil
-        let timer = pollTimer
-        pollTimer = nil
         lock.unlock()
 
-        timer?.cancel()
         source?.cancel()
         handle?.readabilityHandler = nil
         if let handle {

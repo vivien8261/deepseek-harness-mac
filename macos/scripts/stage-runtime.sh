@@ -86,6 +86,7 @@ fi
 
 if [ "$cache_hit" = "1" ]; then
   log "缓存命中：commit=${COMMIT} node=${NODE_V}，跳过 deploy（删除 ${MARKER} 可强制重建）"
+  node "$SCRIPT_DIR/patch-wkwebview-auth.mjs" "$STAGING"
   exit 0
 fi
 
@@ -175,6 +176,8 @@ log "解开 symlink、裁剪构建文件、chmod native helpers…"
 node "$SCRIPT_DIR/materialize-runtime.mjs" "$STAGING" "$DSH_DIR"
 
 [ -f "$STAGING/$BIN_REL" ] || fail "materialize 后丢失 $BIN_REL"
+
+node "$SCRIPT_DIR/patch-wkwebview-auth.mjs" "$STAGING"
 
 mkdir -p "$RUNTIME"
 node -e "
