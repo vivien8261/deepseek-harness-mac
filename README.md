@@ -70,8 +70,9 @@ open "/Applications/DeepSeek Harness.app"
 2. 选择 `3080–3180` 中第一个空闲端口，spawn 包内 `node` 运行 `Contents/Resources/dsh/lib/bin.js web --host 127.0.0.1 --port <端口> --no-open`，工作目录固定为 `$HOME`（Web UI 中仍需手动选择 workspace）。
 3. 就绪检测：解析服务输出的 `dsh web: <url>` 就绪行（已去掉 ANSI 转义）后再打开带启动 token 的地址；不能用裸 `/` 探测结果打开页面，否则 0.1.3 的实时输出通道会连不上。
 4. 页面在 App 内的 `WKWebView` 中加载；指向本地 dsh 服务的链接保持在 App 内，外部链接交给系统默认浏览器打开。
-5. 窗口标题显示已报告的 dsh 版本；`View ▸ Reload`（⌘R）在服务就绪后重载页面，未就绪时重试启动。
-6. 退出时对进程组及其全部子进程发送 `SIGTERM`，5 秒后仍未退出则 `SIGKILL`。
+5. WKWebView 使用内存态数据源（非持久化）：每次启动都是干净状态，不会带入上一次运行遗留的前端状态（旧状态会让会话流在启动时崩溃、正文空白）。登录与会话数据都在服务端 `~/.dsh`，不受影响。
+6. 窗口标题显示已报告的 dsh 版本；`View ▸ Reload`（⌘R）在服务就绪后重载页面，未就绪时重试启动。
+7. 退出时对进程组及其全部子进程发送 `SIGTERM`，5 秒后仍未退出则 `SIGKILL`。
 
 ## 构建缓存
 

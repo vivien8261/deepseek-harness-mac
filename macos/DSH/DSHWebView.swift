@@ -14,7 +14,14 @@ final class DSHWebView: NSView {
 
     override init(frame frameRect: NSRect) {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        // The default persistent store carries the previous run's frontend state
+        // (localStorage/IndexedDB assistant-stream records). Restoring that
+        // state crashes the session store at boot ("Assistant stream raw chunk
+        // must be a lossless JSON object") and leaves the conversation area
+        // blank forever. An in-memory store starts clean every launch; auth is
+        // unaffected because the launch-token exchange mints a per-process
+        // cookie.
+        configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         webView = WKWebView(frame: .zero, configuration: configuration)
