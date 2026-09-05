@@ -263,32 +263,41 @@ function createWindow(url) {
   })
 
   const origin = new URL(url).origin
-  mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
+
+  // Mirror the AppKit shell's navigation policy:
+  // - dsh-service URLs (same origin) and in-page resources (about/blob/data) stay in the shell;
+  // - every other scheme/authority is handed to the system browser and the
+  //   in-shell navigation is cancelled.
+  const handOff = (target) => {
     let parsed
     try {
       parsed = new URL(target, origin)
     } catch {
-      return { action: 'deny' }
+      return false
     }
-    if (parsed.origin === origin) {
-      mainWindow.webContents.loadURL(parsed.href)
-      return { action: 'deny' }
+    const scheme = parsed.protocol
+    if (scheme === 'about:' || scheme === 'blob:' || scheme === 'data:') return false
+    if (scheme === 'http:' || scheme === 'https:') {
+      if (parsed.origin === origin) return false
+      shell.openExternal(parsed.href)
+      return true
     }
-    shell.openExternal(parsed.href)
+    if (scheme === 'mailto:' || scheme.startsWith('tel:') || scheme.startsWith('ftp:')) {
+      shell.openExternal(parsed.href)
+      return true
+    }
+    // Unknown schemes: do not navigate inside the shell.
+    return true
+  }
+
+  mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
+    // Same-service popups behave like the AppKit shell: keep them in the shell
+    // window; external handoffs were already dispatched by handOff().
+    if (!handOff(target)) mainWindow.webContents.loadURL(target)
     return { action: 'deny' }
   })
   mainWindow.webContents.on('will-navigate', (event, target) => {
-    let parsed
-    try {
-      parsed = new URL(target, origin)
-    } catch {
-      event.preventDefault()
-      return
-    }
-    if (parsed.origin !== origin) {
-      event.preventDefault()
-      shell.openExternal(parsed.href)
-    }
+    if (handOff(target)) event.preventDefault()
   })
 
   mainWindow.loadURL(url)
