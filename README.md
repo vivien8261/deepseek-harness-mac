@@ -1,10 +1,12 @@
 # DeepSeek Harness for macOS
 
-macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官方 Web UI，退出时一并结束服务。
+macOS 桌面壳：后台启动 dsh 本地 Web 服务，用内嵌浏览器展示官方 Web UI，退出时一并结束服务。
+
+**推荐使用 Electron（Chromium）壳**（`build-electron.sh`）。WebKit/WKWebView 壳存在前端兼容性问题：harness 前端对助手流的对象语义校验在 WebKit 下崩溃（`Assistant stream raw chunk must be a lossless JSON object`，正文空白、点击会话无响应），Chrome 与 Electron 共用引擎、不受影响。WKWebView（AppKit）壳保留在 `build.sh` 中以便对照。
 
 ## 项目结构
 
-- `macos/DSH/` — Swift 桌面壳源码
+- `macos/DSH/` — Swift 桌面壳源码（WKWebView 版）
   - `Main.swift` / `AppDelegate.swift` — App 入口与菜单（含 View ▸ Reload，⌘R）
   - `MainWindowController.swift` — 主窗口（1280×800，最小 900×600）与启动/关闭流程
   - `ServerSupervisor.swift` — 服务生命周期：选端口、spawn、就绪检测、退出清理
@@ -14,6 +16,7 @@ macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官
   - `LoadingOverlay.swift` — 启动覆盖层（状态、日志、重试按钮）
   - `LaunchLog.swift` — 诊断日志
   - `Info.plist` / `DSH.entitlements` / `Assets/`（应用图标）
+- `macos/shell-electron/` — Electron（Chromium）壳：`main.js` 负责 spawn 内置 dsh web、等待 `dsh web:` 就绪行、打开浏览器窗口、退出时结束服务
 - `macos/upgrade.sh` — 一键升级：拉取上游最新 `dsh-v*` tag、更新 submodule、重建并安装 App
 - `macos/scripts/` — 构建脚本
   - `build-dsh.sh` — 从 submodule 源码构建 dsh（带缓存）
@@ -42,29 +45,43 @@ macOS 桌面壳：后台启动 dsh 本地 Web 服务，用 `WKWebView` 展示官
 
 ## 构建
 
+**Electron（Chromium）壳 —— 推荐：**
+
 ```sh
-chmod +x macos/build.sh macos/upgrade.sh macos/scripts/make-icon.sh macos/scripts/build-dsh.sh macos/scripts/stage-runtime.sh macos/scripts/verify-runtime-auth.sh
+chmod +x macos/build-electron.sh
+./macos/build-electron.sh            # 构建并安装到 /Applications
+./macos/build-electron.sh --dist-only  # 只产出 dist/DeepSeek Harness.app
+```
+
+首次构建会下载 Electron 官方 zip（缓存在 `.cache/electron/`，之后离线复用）。产物与 WKWebView 版同名（`dist/DeepSeek Harness.app`），可整体替换 `/Applications` 中的旧版；Bundle id 相同（`ai.deepseek.dsh.macos`）。
+
+**WKWebView（AppKit）壳 —— 保留用于对照：**
+
+```sh
+chmod +x macos/build.sh macos/upgrade.sh macos/scripts/*.sh
 ./macos/build.sh
-open "/Applications/DeepSeek Harness.app"
+./macos/build.sh --dist-only
 ```
 
-只重建产物、不动运行进程、不安装到 `/Applications`：
-
-```sh
-./macos/build.sh --dist-only   # 产物在 dist/DeepSeek Harness.app，之后手动拷贝安装
-```
-
-`macos/build.sh` 依次执行：
+`build.sh` 与 `build-electron.sh` 共用同一套 dsh 运行时流水线：
 
 1. 初始化 submodule（缺失时 `git submodule update --init --depth 1`）
 2. `build-dsh.sh`：按上游方式从源码构建 dsh（`pnpm install` + `pnpm run build`，client profile 为 `official`）
 3. `stage-runtime.sh`：`pnpm deploy --prod` 生成 dsh 生产闭包、下载官方 Node 24 二进制，再解开 symlink、裁剪构建产物、应用 WebSocket 鉴权补丁，写入 `dist/runtime/` 与 `runtime.json`（含 `authPatch` 状态）
 4. `verify-runtime-auth.sh`：确认运行时已含 `hasLaunchToken` + `SameSite=Lax`，缺失即构建失败，避免把坏运行时打进 App
-5. 编译 Swift 壳，把 `dist/runtime/` 内容装入 `Contents/Resources/`，生成 `.app`（ad-hoc 签名）；默认安装到 `/Applications`（`--dist-only` 时跳过）
+5. 组装 `.app`（ad-hoc 签名）；默认安装到 `/Applications`（`--dist-only` 时跳过）
 
 构建脚本会自动检测本机代理（`127.0.0.1:7890`）并用于依赖下载。构建结果安装到 `/Applications/DeepSeek Harness.app`；运行时不依赖源码仓库、git、pnpm 或 Homebrew Node，因此源码仓库在安装后可删除或移动。
 
-## 运行行为
+## 运行行为（Electron 壳）
+
+1. 选择 `3080–3180` 中第一个空闲端口（connect 探测，避免误判被占端口），spawn 包内 `node` 运行 `Contents/Resources/dsh/lib/bin.js web --host 127.0.0.1 --port <端口> --no-open`，工作目录固定为 `$HOME`。
+2. 就绪检测：解析服务输出的 `dsh web: <url>` 就绪行（已去掉 ANSI 转义）后再打开带启动 token 的地址；不能用裸 `/` 探测结果打开页面，否则 0.1.3 的实时输出通道会连不上。
+3. 页面在内置 Chromium 窗口中加载；指向本地 dsh 服务的链接保持在窗口内，外部链接交给系统默认浏览器打开。
+4. 菜单：View ▸ Reload / Force Reload / DevTools；Help ▸ 打开日志文件（`~/Library/Logs/DeepSeekHarness.log`）。
+5. 退出时结束 dsh 子进程（SIGTERM，5 秒后 SIGKILL）；App 只清理自身记录的孤儿 dsh web（`~/.dsh/.dsh-web-macos.json`），不影响终端中手动运行的 `dsh web`。
+
+## 运行行为（WKWebView 壳）
 
 1. 窗口立即出现，覆盖层显示启动日志（内置 dsh 版本、commit、Node 版本、端口等）。
 2. 选择 `3080–3180` 中第一个空闲端口，spawn 包内 `node` 运行 `Contents/Resources/dsh/lib/bin.js web --host 127.0.0.1 --port <端口> --no-open`，工作目录固定为 `$HOME`（Web UI 中仍需手动选择 workspace）。
