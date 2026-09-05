@@ -14,14 +14,7 @@ final class DSHWebView: NSView {
 
     override init(frame frameRect: NSRect) {
         let configuration = WKWebViewConfiguration()
-        // The default persistent store carries the previous run's frontend state
-        // (localStorage/IndexedDB assistant-stream records). Restoring that
-        // state crashes the session store at boot ("Assistant stream raw chunk
-        // must be a lossless JSON object") and leaves the conversation area
-        // blank forever. An in-memory store starts clean every launch; auth is
-        // unaffected because the launch-token exchange mints a per-process
-        // cookie.
-        configuration.websiteDataStore = .nonPersistent()
+        configuration.websiteDataStore = .default()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -34,10 +27,29 @@ final class DSHWebView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Clear saved WebKit site data (cookies, localStorage/IndexedDB records,
+    /// caches) before every page load. The persistent data store is required
+    /// for a stable authentication flow (the 303 token exchange also issues
+    /// the WebSocket cookie), but the previous run's frontend state restored
+    /// from it crashes the session store at boot ("Assistant stream raw chunk
+    /// must be a lossless JSON object") and leaves the conversation area
+    /// blank. The launch-token page request mints a fresh cookie on every
+    /// load, so clearing here is safe; all real data lives server-side in
+    /// ~/.dsh.
+    private func clearPreviousState(_ then: @escaping () -> Void) {
+        let store = WKWebsiteDataStore.default()
+        store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+            DispatchQueue.main.async(execute: then)
+        }
+    }
+
     func load(_ url: URL) {
         currentURL = url
-        installLaunchTokenScript(url)
-        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        clearPreviousState { [weak self] in
+            guard let self else { return }
+            self.installLaunchTokenScript(url)
+            self.webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        }
     }
 
     func reload() {
