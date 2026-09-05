@@ -4,6 +4,7 @@ final class MainWindowController: NSWindowController {
     let supervisor = ServerSupervisor()
     private let webView = DSHWebView()
     private let overlay = LoadingOverlay()
+    private let logPanel = LogPanelController()
     private var shuttingDown = false
 
     convenience init() {
@@ -26,10 +27,19 @@ final class MainWindowController: NSWindowController {
     func startServer() {
         overlay.applyAppIcon()
         overlay.resetLog()
+        logPanel.reset()
         overlay.showStarting()
         overlay.isHidden = false
         window?.title = "DeepSeek Harness"
         supervisor.start()
+    }
+
+    @objc func toggleServerLogs(_ sender: Any?) {
+        logPanel.toggle(relativeTo: window)
+    }
+
+    @objc func openLogFile(_ sender: Any?) {
+        NSWorkspace.shared.open(LaunchLog.url)
     }
 
     func beginShutdown(completion: @escaping () -> Void) {
@@ -92,6 +102,7 @@ final class MainWindowController: NSWindowController {
 extension MainWindowController: ServerSupervisorDelegate {
     func supervisor(_ supervisor: ServerSupervisor, didReceiveLog chunk: String) {
         overlay.appendLog(chunk)
+        logPanel.append(chunk)
     }
 
     func supervisor(_ supervisor: ServerSupervisor, didReportVersion version: String) {

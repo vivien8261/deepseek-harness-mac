@@ -371,6 +371,7 @@ final class ServerSupervisor {
     }
 
     private func emitLog(_ chunk: String) {
+        LaunchLog.appendOutput(chunk)
         callbackQueue.async { [weak self] in
             guard let self else { return }
             self.delegate?.supervisor(self, didReceiveLog: chunk)

@@ -95,4 +95,5 @@ open "/Applications/DeepSeek Harness.app"
 ## 数据与日志
 
 - 会话与设置保存在 `~/.dsh`，不会随 App 覆盖而丢失
-- 启动诊断日志：`~/Library/Logs/DeepSeekHarness.log`
+- 运行日志：`~/Library/Logs/DeepSeekHarness.log`（启动事件 + 包内 `console.log` / `console.error`）
+- App 内查看：`View ▸ Server Logs`（⌘L）；用系统应用打开：`Help ▸ Open Log File`

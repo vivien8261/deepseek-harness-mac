@@ -89,6 +89,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(MainWindowController.reloadPage(_:)),
             keyEquivalent: "r"
         )
+        viewMenu.addItem(
+            withTitle: "Server Logs",
+            action: #selector(MainWindowController.toggleServerLogs(_:)),
+            keyEquivalent: "l"
+        )
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -107,6 +112,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
         NSApp.windowsMenu = windowMenu
+
+        let helpMenuItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(
+            withTitle: "Open Log File",
+            action: #selector(MainWindowController.openLogFile(_:)),
+            keyEquivalent: ""
+        )
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
+        NSApp.helpMenu = helpMenu
 
         return mainMenu
     }
