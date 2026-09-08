@@ -13,6 +13,7 @@
 #   macos/upgrade.sh --no-commit     # 更新后不提交
 #   macos/upgrade.sh --force         # 已是目标 tag 也强制重建
 #
+# 升级中途失败（如构建被打断）后，直接重跑本脚本即可自动续跑剩余步骤。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -45,6 +46,8 @@ Usage:
   macos/upgrade.sh --no-build      # 只更新 submodule，不构建
   macos/upgrade.sh --no-commit     # 更新后不提交
   macos/upgrade.sh --force         # 已是目标 tag 也强制重建
+
+  升级中途失败后直接重跑本脚本，会自动续跑剩余步骤（无需 --force）。
 EOF
   exit 0
 }
@@ -155,7 +158,23 @@ if [ "$CURRENT_TAG" = "$TARGET_TAG" ]; then
   already_on_target=1
 fi
 
-if [ "$already_on_target" = "1" ] && [ "$FORCE" != "1" ]; then
+# 升级中断标记：动 submodule / 开始构建前写入，全部完成后删除。
+# 中途失败后重跑本脚本会检测到它，直接续跑剩余步骤（构建会自动补上），
+# 而不是因为"已在目标 tag"直接退出。
+PENDING="$REPO/.git/upgrade-pending"
+pending=0
+if [ -f "$PENDING" ]; then
+  pending_tag="$(head -n 1 "$PENDING" 2>/dev/null || true)"
+  if [ "$pending_tag" = "$TARGET_TAG" ]; then
+    pending=1
+    log "检测到上次升级未完成（${TARGET_TAG}），继续完成剩余步骤"
+  else
+    rm -f "$PENDING"
+    [ -z "$pending_tag" ] || log "已清理过期升级标记（${pending_tag}）"
+  fi
+fi
+
+if [ "$already_on_target" = "1" ] && [ "$FORCE" != "1" ] && [ "$pending" != "1" ]; then
   log "已在目标 tag，无需更新（重建请加 --force）"
   exit 0
 fi
@@ -170,12 +189,22 @@ if [ -z "$REQUESTED_TAG" ] && [ -n "$CURRENT_TAG" ] && [ "$already_on_target" !=
 fi
 
 if [ "$already_on_target" != "1" ]; then
+  printf '%s\n' "$TARGET_TAG" > "$PENDING"
   log "拉取 ${TARGET_TAG}…"
   git -C "$DSH_DIR" fetch --depth 1 origin "tag" "$TARGET_TAG"
   git -C "$DSH_DIR" checkout --detach "$TARGET_TAG"
   NEW_SHA="$(git -C "$DSH_DIR" rev-parse --short HEAD)"
   log "已切换到 $TARGET_TAG ($NEW_SHA)"
+else
+  if [ "$FORCE" = "1" ]; then
+    log "--force：保持 ${TARGET_TAG}，强制重建"
+  else
+    log "已在 ${TARGET_TAG}，续跑剩余步骤"
+  fi
+fi
 
+# 提交 submodule 指针（幂等：上次升级已提交过则自动跳过；续跑时补上未提交的指针）
+if [ "$already_on_target" != "1" ] || [ "$pending" = "1" ]; then
   git -C "$REPO" add "$DSH_DIR"
   if [ "$NO_COMMIT" = "1" ]; then
     log "已暂存 submodule 指针（--no-commit，未提交）"
@@ -190,18 +219,24 @@ if [ "$already_on_target" != "1" ]; then
       fi
     fi
   fi
-else
-  log "--force：保持 ${TARGET_TAG}，强制重建"
 fi
 
 if [ "$NO_BUILD" = "1" ]; then
+  rm -f "$PENDING"
   log "已更新，跳过构建（--no-build）"
   exit 0
 fi
 
-log "开始构建（SHELL_KIND=$SHELL_KIND）…"
+# 注意：变量必须用 ${} 括起来。系统自带的 bash 3.2 在 UTF-8 locale 下，
+# 未加括号的 $VAR 紧跟全角字符时会把多字节字符吞进变量名，set -u 下直接报
+# "unbound variable"（本脚本历史上就因此死在这一行）。
+log "开始构建（SHELL_KIND=${SHELL_KIND}）…"
+printf '%s\n' "$TARGET_TAG" > "$PENDING"
+# 不用 exec：构建失败时标记保留，重跑可续；成功则删除标记，升级才算完成
 if [ "$SHELL_KIND" = "chromium" ]; then
-  exec "$ROOT/build-electron.sh"
+  "$ROOT/build-electron.sh"
 else
-  exec "$ROOT/build.sh"
+  "$ROOT/build.sh"
 fi
+rm -f "$PENDING"
+log "升级完成：${TARGET_TAG}"
