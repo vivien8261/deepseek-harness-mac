@@ -62,6 +62,244 @@ function logLine(message) {
 }
 
 // ---------------------------------------------------------------------------
+// Balance (Help ▸ Check Balance)
+// ---------------------------------------------------------------------------
+//
+// The shell queries DeepSeek's `GET /user/balance` directly, the same way the
+// harness talks to a provider: the API key and base URL come from the same
+// `~/.dsh` state the dsh runtime reads (or the launching environment), and the
+// result is shown in a native alert. Nothing here logs a key value.
+
+const DEFAULT_BASE_URL = 'https://api.deepseek.com'
+const BALANCE_TIMEOUT_MS = 10000
+let balanceQueryInFlight = false
+
+function dshHomeDir() {
+  const configured = process.env.DSH_HOME
+  return configured !== undefined && configured.length > 0 ? configured : join(os.homedir(), '.dsh')
+}
+
+/** Strip one layer of matching single/double quotes from a YAML scalar. */
+function unquoteScalar(value) {
+  const trimmed = value.trim()
+  if (trimmed.length >= 2) {
+    const first = trimmed[0]
+    if ((first === '"' || first === "'") && trimmed[trimmed.length - 1] === first) {
+      return trimmed.slice(1, -1)
+    }
+  }
+  return trimmed
+}
+
+/**
+ * Read the `refs:` block of a dsh credentials document. Only that section is
+ * scanned, so a same-named key under `records:` is never mistaken for a stored
+ * secret. The reader is deliberately narrow: this file is machine-written by
+ * the credentials plugin, not hand-authored YAML.
+ */
+function parseCredentialRefs(text) {
+  const refs = new Map()
+  let inRefs = false
+  for (const line of text.split(/\r?\n/)) {
+    if (!inRefs) {
+      if (/^refs:\s*$/.test(line)) inRefs = true
+      continue
+    }
+    if (line.trim() === '') continue
+    if (!/^\s/.test(line)) break // dedented past the block
+    const match = /^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(line)
+    if (match === null) continue
+    const value = unquoteScalar(match[2])
+    if (value.length > 0) refs.set(match[1], value)
+  }
+  return refs
+}
+
+/** The DeepSeek API key: launching environment first, then the managed store. */
+async function resolveApiKey() {
+  const fromEnv = process.env.DEEPSEEK_API_KEY
+  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) return fromEnv.trim()
+  try {
+    const text = await fs.promises.readFile(join(dshHomeDir(), '.credentials.yaml'), 'utf8')
+    const stored = parseCredentialRefs(text).get('DEEPSEEK_API_KEY')
+    if (stored !== undefined && stored.trim().length > 0) return stored.trim()
+  } catch {
+    // absent or unreadable is simply "not configured"
+  }
+  return undefined
+}
+
+/** `baseURL` from the `llm-deepseek:` block of settings.yaml, if present. */
+function readSettingsBaseURL() {
+  let text
+  try {
+    text = fs.readFileSync(join(dshHomeDir(), 'settings.yaml'), 'utf8')
+  } catch {
+    return undefined
+  }
+  let inSection = false
+  for (const line of text.split(/\r?\n/)) {
+    if (!inSection) {
+      if (/^llm-deepseek:\s*$/.test(line)) inSection = true
+      continue
+    }
+    if (line.trim() === '') continue
+    if (!/^\s/.test(line)) break
+    const match = /^\s+baseURL\s*:\s*(.*)$/.exec(line)
+    if (match === null) continue
+    const value = unquoteScalar(match[1])
+    if (value.length > 0) return value
+  }
+  return undefined
+}
+
+function normalizeBaseURL(value) {
+  // The balance endpoint sits at the API root, so drop a trailing `/v1` as well.
+  return value.trim().replace(/\/+$/, '').replace(/\/v1$/, '')
+}
+
+/** Effective base URL: environment, then settings, then the public default. */
+function resolveBaseURL() {
+  const fromEnv = process.env.DEEPSEEK_BASE_URL
+  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) return normalizeBaseURL(fromEnv)
+  const fromSettings = readSettingsBaseURL()
+  if (fromSettings !== undefined) return normalizeBaseURL(fromSettings)
+  return DEFAULT_BASE_URL
+}
+
+async function fetchBalance(apiKey, baseURL) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), BALANCE_TIMEOUT_MS)
+  try {
+    const response = await fetch(`${baseURL}/user/balance`, {
+      method: 'GET',
+      headers: { accept: 'application/json', authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      let body = ''
+      try { body = (await response.text()).slice(0, 300) } catch { /* body is optional */ }
+      const error = new Error(`HTTP ${response.status}${body ? `: ${body}` : ''}`)
+      error.status = response.status
+      throw error
+    }
+    return await response.json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function currencySymbol(currency) {
+  if (currency === 'CNY') return '¥'
+  if (currency === 'USD') return '$'
+  return ''
+}
+
+/** Render one balance field, tolerating a missing or non-string value. */
+function formatAmount(value) {
+  return typeof value === 'string' && value.length > 0 ? value : '--'
+}
+
+/** Turn the balance payload into the alert's message/detail pair. */
+function formatBalance(data, zh) {
+  const infos = Array.isArray(data?.balance_infos) ? data.balance_infos : []
+  if (infos.length === 0) {
+    return {
+      message: zh ? '余额信息不可用' : 'Balance unavailable',
+      detail: zh ? '服务未返回余额明细。' : 'The service did not return any balance details.',
+    }
+  }
+  const blocks = infos.map((info) => {
+    const currency = typeof info?.currency === 'string' ? info.currency : ''
+    const symbol = currencySymbol(currency)
+    const total = formatAmount(info?.total_balance)
+    const topped = formatAmount(info?.topped_up_balance)
+    const granted = formatAmount(info?.granted_balance)
+    const head = `${currency}${zh ? ' 总余额：' : ' total: '}${symbol}${total}`
+    const breakdown = zh
+      ? `    充值余额：${symbol}${topped}    赠送余额：${symbol}${granted}`
+      : `    Topped up: ${symbol}${topped}    Granted: ${symbol}${granted}`
+    return `${head}\n${breakdown}`
+  })
+  const detail = blocks.join('\n\n')
+  if (data?.is_available === false) {
+    return { message: zh ? '账户余额（不可用：余额不足）' : 'Account Balance (unavailable: insufficient)', detail }
+  }
+  return { message: zh ? '账户余额' : 'Account Balance', detail }
+}
+
+function showBalanceDialog(options) {
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  const show = parent
+    ? dialog.showMessageBox(parent, options)
+    : dialog.showMessageBox(options)
+  show.catch(() => { /* a dismissed alert must not surface as a rejection */ })
+}
+
+async function checkBalance() {
+  if (balanceQueryInFlight) return
+  balanceQueryInFlight = true
+  const zh = /^zh/i.test(app.getLocale())
+  const labels = {
+    title: zh ? '余额查询' : 'Check Balance',
+    ok: zh ? '确定' : 'OK',
+  }
+  try {
+    const apiKey = await resolveApiKey()
+    if (apiKey === undefined) {
+      showBalanceDialog({
+        type: 'warning',
+        title: labels.title,
+        message: zh ? '未找到 API Key' : 'API Key not found',
+        detail: zh
+          ? '请先在「设置 ▸ 模型」中配置 DeepSeek API Key，或设置环境变量 DEEPSEEK_API_KEY。'
+          : 'Configure a DeepSeek API key under Settings ▸ Models, or set the DEEPSEEK_API_KEY environment variable.',
+        buttons: [labels.ok],
+        defaultId: 0,
+        cancelId: 0,
+      })
+      return
+    }
+
+    const baseURL = resolveBaseURL()
+    logLine(`balance: querying ${baseURL}/user/balance`)
+    let data
+    try {
+      data = await fetchBalance(apiKey, baseURL)
+    } catch (error) {
+      const reason = error?.name === 'AbortError'
+        ? (zh ? `请求超时（${BALANCE_TIMEOUT_MS / 1000} 秒）` : `Request timed out after ${BALANCE_TIMEOUT_MS / 1000}s`)
+        : (error?.message ?? String(error))
+      // Log the status only: an HTTP error body can quote part of the key.
+      logLine(`balance: query failed – ${typeof error?.status === 'number' ? `HTTP ${error.status}` : reason}`)
+      showBalanceDialog({
+        type: 'error',
+        title: labels.title,
+        message: zh ? '余额查询失败' : 'Balance query failed',
+        detail: reason,
+        buttons: [labels.ok],
+        defaultId: 0,
+        cancelId: 0,
+      })
+      return
+    }
+
+    const formatted = formatBalance(data, zh)
+    showBalanceDialog({
+      type: 'info',
+      title: labels.title,
+      message: formatted.message,
+      detail: formatted.detail,
+      buttons: [labels.ok],
+      defaultId: 0,
+      cancelId: 0,
+    })
+  } finally {
+    balanceQueryInFlight = false
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Bundled runtime discovery
 // ---------------------------------------------------------------------------
 
@@ -528,6 +766,7 @@ function menuLabels() {
     help: zh ? '帮助' : 'Help',
     serverLogs: zh ? '服务日志' : 'Server Logs',
     openLogFile: zh ? '打开日志文件' : 'Open Log File',
+    balance: zh ? '余额查询' : 'Check Balance',
   }
 }
 
@@ -575,6 +814,11 @@ function buildMenu() {
       role: 'help',
       label: L.help,
       submenu: [
+        {
+          label: L.balance,
+          click: () => { void checkBalance() },
+        },
+        { type: 'separator' },
         {
           label: L.openLogFile,
           click: () => {

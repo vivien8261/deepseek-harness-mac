@@ -61,7 +61,7 @@ DeepSeek Harness（`dsh`）是 DeepSeek 开源的 Agent harness，基于 Cordis 
 
 **就绪**：解析服务输出的 `dsh web: <url>` 就绪行（已去 ANSI 转义）后再打开带启动 token 的地址。不能直接用 `/` 探测结果打开页面，否则 0.1.3 的实时输出通道会连不上。
 
-**使用中**：指向本地 dsh 服务的链接保持在窗口内，外部链接交给系统默认浏览器打开；`View ▸ Reload`（⌘R）重载页面。Electron 壳菜单含 Reload / Force Reload / DevTools；WKWebView 壳提供 `View ▸ Server Logs`（⌘L）。`Help ▸ Open Log File` 用系统应用打开运行日志。
+**使用中**：指向本地 dsh 服务的链接保持在窗口内，外部链接交给系统默认浏览器打开；`View ▸ Reload`（⌘R）重载页面。Electron 壳菜单含 Reload / Force Reload / DevTools；WKWebView 壳提供 `View ▸ Server Logs`（⌘L）。`Help ▸ Open Log File` 用系统应用打开运行日志；`Help ▸ 余额查询` 调用 DeepSeek `GET /user/balance` 并在弹窗中显示账户余额，API Key 取自 `~/.dsh/.credentials.yaml` 或环境变量 `DEEPSEEK_API_KEY`，baseURL 取自 `DEEPSEEK_BASE_URL`、设置中的 `llm-deepseek.baseURL` 或默认 `https://api.deepseek.com`。
 
 **退出**：向 dsh 子进程（及进程组全部子进程）发送 `SIGTERM`，5 秒后仍未退出则 `SIGKILL`。App 只清理自身记录的孤儿 dsh web（`~/.dsh/.dsh-web-macos.json`），不影响终端中手动运行的 `dsh web`。
 
