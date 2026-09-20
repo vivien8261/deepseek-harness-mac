@@ -167,6 +167,14 @@ rm -rf "$STAGING"
 log "pnpm deploy @deepseek-ai/dsh --prod（可能需要几分钟）…"
 export CI=true
 START="$(date +%s)"
+# --config.allow-unused-patches=true: `--prod` resolves only the production
+# closure, while pnpm validates every entry of `patchedDependencies` against it.
+# `@electron/osx-sign` is patched for the signed desktop build but is reachable
+# only through apps/desktop devDependencies, so a --prod deploy sees it as unused
+# and aborts with ERR_PNPM_UNUSED_PATCH. The patch itself must stay in
+# pnpm-workspace.yaml: pnpm install --frozen-lockfile rejects a config that
+# disagrees with pnpm-lock.yaml, and apps/desktop still needs it. Allowing the
+# unused entry here relaxes only this deploy's check, not the lockfile contract.
 (
   cd "$DSH_DIR"
   $PNPM --filter @deepseek-ai/dsh deploy \
@@ -175,6 +183,7 @@ START="$(date +%s)"
     --config.node-linker=hoisted \
     --config.auto-install-peers=false \
     --config.link-workspace-packages=true \
+    --config.allow-unused-patches=true \
     "$STAGING"
 )
 DURATION="$(( $(date +%s) - START ))"
